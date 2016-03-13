@@ -17,6 +17,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
 	"gopkg.in/ini.v1"
+
+	"github.com/prometheus/mysqld_exporter/scraper"
 )
 
 var (
@@ -55,10 +57,6 @@ var (
 	innodbMetrics = flag.Bool(
 		"collect.info_schema.innodb_metrics", false,
 		"Collect metrics from information_schema.innodb_metrics",
-	)
-	collectGlobalStatus = flag.Bool(
-		"collect.global_status", true,
-		"Collect from SHOW GLOBAL STATUS",
 	)
 	collectGlobalVariables = flag.Bool(
 		"collect.global_variables", true,
@@ -128,7 +126,6 @@ const (
 	namespace = "mysql"
 	// Subsystems.
 	exporter          = "exporter"
-	globalStatus      = "global_status"
 	globalVariables   = "global_variables"
 	informationSchema = "info_schema"
 	performanceSchema = "perf_schema"
@@ -139,7 +136,6 @@ const (
 // Metric SQL Queries.
 const (
 	sessionSettingsQuery       = `SET SESSION log_slow_filter = 'tmp_table_on_disk,filesort_on_disk'`
-	globalStatusQuery          = `SHOW GLOBAL STATUS`
 	globalVariablesQuery       = `SHOW GLOBAL VARIABLES`
 	slaveStatusQuery           = `SHOW SLAVE STATUS`
 	binlogQuery                = `SHOW BINARY LOGS`
@@ -315,26 +311,6 @@ var (
 		"Number of registered binlog files.",
 		[]string{}, nil,
 	)
-	globalCommandsDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, globalStatus, "commands_total"),
-		"Total number of executed MySQL commands.",
-		[]string{"command"}, nil,
-	)
-	globalHandlerDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, globalStatus, "handlers_total"),
-		"Total number of executed MySQL handlers.",
-		[]string{"handler"}, nil,
-	)
-	globalConnectionErrorsDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, globalStatus, "connection_errors_total"),
-		"Total number of MySQL connection errors.",
-		[]string{"error"}, nil,
-	)
-	globalInnoDBRowOpsDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, globalStatus, "innodb_row_ops_total"),
-		"Total number of MySQL InnoDB row operations.",
-		[]string{"operation"}, nil,
-	)
 	globalInfoSchemaAutoIncrementDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, informationSchema, "auto_increment_column"),
 		"The current value of an auto_increment column from information_schema.",
@@ -359,11 +335,6 @@ var (
 		prometheus.BuildFQName(namespace, informationSchema, "table_size"),
 		"The size of the table components from information_schema.tables",
 		[]string{"schema", "table", "component"}, nil,
-	)
-	globalPerformanceSchemaLostDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, globalStatus, "performance_schema_lost_total"),
-		"Total number of MySQL instrumentations that could not be loaded or created due to memory constraints.",
-		[]string{"instrumentation"}, nil,
 	)
 	performanceSchemaTableWaitsDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, performanceSchema, "table_io_waits_total"),
@@ -703,10 +674,7 @@ var (
 )
 
 // Various regexps.
-var (
-	globalStatusRE = regexp.MustCompile(`^(com|handler|connection_errors|innodb_rows|performance_schema)_(.*)$`)
-	logRE          = regexp.MustCompile(`.+\.(\d+)$`)
-)
+var logRE          = regexp.MustCompile(`.+\.(\d+)$`)
 
 // Exporter collects MySQL metrics. It implements prometheus.Collector.
 type Exporter struct {
@@ -828,8 +796,8 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 		sessionSettingsRows.Close()
 	}
 
-	if *collectGlobalStatus {
-		if err = scrapeGlobalStatus(db, ch); err != nil {
+	if *scraper.collectGlobalStatus {
+		if err = scraper.scrapeGlobalStatus(db, ch); err != nil {
 			log.Errorln("Error scraping global state:", err)
 			e.scrapeErrors.WithLabelValues("collect.global_status").Inc()
 		}
@@ -930,58 +898,6 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 			e.scrapeErrors.WithLabelValues("collect.info_schema.query_response_time").Inc()
 		}
 	}
-}
-
-func scrapeGlobalStatus(db *sql.DB, ch chan<- prometheus.Metric) error {
-	globalStatusRows, err := db.Query(globalStatusQuery)
-	if err != nil {
-		return err
-	}
-	defer globalStatusRows.Close()
-
-	var key string
-	var val sql.RawBytes
-
-	for globalStatusRows.Next() {
-		if err := globalStatusRows.Scan(&key, &val); err != nil {
-			return err
-		}
-		if floatVal, ok := parseStatus(val); ok { // Unparsable values are silently skipped.
-			key = strings.ToLower(key)
-			match := globalStatusRE.FindStringSubmatch(key)
-			if match == nil {
-				ch <- prometheus.MustNewConstMetric(
-					newDesc(globalStatus, key, "Generic metric from SHOW GLOBAL STATUS."),
-					prometheus.UntypedValue,
-					floatVal,
-				)
-				continue
-			}
-			switch match[1] {
-			case "com":
-				ch <- prometheus.MustNewConstMetric(
-					globalCommandsDesc, prometheus.CounterValue, floatVal, match[2],
-				)
-			case "handler":
-				ch <- prometheus.MustNewConstMetric(
-					globalHandlerDesc, prometheus.CounterValue, floatVal, match[2],
-				)
-			case "connection_errors":
-				ch <- prometheus.MustNewConstMetric(
-					globalConnectionErrorsDesc, prometheus.CounterValue, floatVal, match[2],
-				)
-			case "innodb_rows":
-				ch <- prometheus.MustNewConstMetric(
-					globalInnoDBRowOpsDesc, prometheus.CounterValue, floatVal, match[2],
-				)
-			case "performance_schema":
-				ch <- prometheus.MustNewConstMetric(
-					globalPerformanceSchemaLostDesc, prometheus.CounterValue, floatVal, match[2],
-				)
-			}
-		}
-	}
-	return nil
 }
 
 func scrapeGlobalVariables(db *sql.DB, ch chan<- prometheus.Metric) error {
