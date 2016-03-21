@@ -387,3 +387,41 @@ func Test_scrapeEngineTokudbStatus(t *testing.T) {
 		t.Errorf("there were unfulfilled expections: %s", err)
 	}
 }
+
+func Test_scrapePerfIndexIOWaits(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("error opening a stub database connection: %s", err)
+	}
+	defer db.Close()
+
+	columns := []string{"OBJECT_SCHEMA", "OBJECT_NAME", "INDEX_NAME", "COUNT_FETCH", "COUNT_INSERT", "COUNT_UPDATE", "COUNT_DELETE", "SUM_TIMER_FETCH", "SUM_TIMER_INSERT", "SUM_TIMER_UPDATE", "SUM_TIMER_DELETE"}
+	rows := sqlmock.NewRows(columns).
+		AddRow("database", "table", "index", "10", "11", "12", "13", "14", "15", "16", "17").
+		AddRow("database", "table", "PRIMARY", "20", "21", "22", "23", "24", "25", "26", "27").
+		AddRow("database", "table", "NONE", "30", "31", "32", "33", "34", "35", "36", "37")
+	mock.ExpectQuery(sanitizeQuery(perfIndexIOWaitsQuery)).WillReturnRows(rows)
+
+	ch := make(chan prometheus.Metric)
+	go func() {
+		if err = scrapePerfIndexIOWaits(db, ch); err != nil {
+			t.Errorf("error calling function on test: %s", err)
+		}
+		close(ch)
+	}()
+
+	metricExpected := []MetricResult{
+		{labels: LabelMap{"schema": "db", "name": "table", "index": "index", "operation": "fetch"}, value: 21, metricType: dto.MetricType_COUNTER},
+	}
+	convey.Convey("Metrics comparison", t, func() {
+		for _, expect := range metricExpected {
+			got := readMetric(<-ch)
+			convey.So(got, convey.ShouldResemble, expect)
+		}
+	})
+
+	// Ensure all SQL queries were executed
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("there were unfulfilled expections: %s", err)
+	}
+}
