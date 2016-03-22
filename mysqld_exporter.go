@@ -2064,7 +2064,7 @@ func parseMycnf(config interface{}) (string, error) {
 	if (user == "") || (password == "") {
 		return dsn, fmt.Errorf("no user or password specified under [client] in %s", config)
 	}
-	host := cfg.Section("client").Key("host").MustString("localhost")
+	host := cfg.Section("client").Key("host").MustString("10.0.21.132")
 	port := cfg.Section("client").Key("port").MustUint(3306)
 	socket := cfg.Section("client").Key("socket").String()
 	if socket != "" {
